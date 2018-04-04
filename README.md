@@ -32,8 +32,10 @@ Install Python dependencies.
 
 <code> pip install -r requirements.txt </code> 
 
-Edit <code>config.ini</code> file.
+Edit the <code>config_.ini</code> file, mainly add your dweet thing to it. Rename the file to config.ini.
 
 Run both programs as daemons.
 
 You can set a cron job to run the <code>restarter.py</code> script which restarts both programs automatically if they are not running
+
+<code>(crontab -l 2>/dev/null; echo "*/2 * * * * python restarter.py")| crontab -</code>
