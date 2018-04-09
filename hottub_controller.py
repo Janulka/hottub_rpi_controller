@@ -91,7 +91,7 @@ class HotTubController(object):
         print("Done reading.")
         return desired_temperature
 
-    def _read_temperatures(self, desired_temperature):
+    def _read_temperatures(self):
         self.current_temperature = self._get_current_temperature()
         self.current_desired_temperature = self._get_current_desired_temperature()
 
