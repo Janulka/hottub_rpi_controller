@@ -8,8 +8,9 @@ import configparser
 config = configparser.ConfigParser()
 config.read('config.ini')
 
+
 class HotTubController(object):
-    DWEET_URL_POST = "https://dweet.io:443/dweet/quietly/for/%s" % config['dweet']['thing'] 
+    DWEET_URL_POST = "https://dweet.io:443/dweet/quietly/for/%s" % config['dweet']['thing']
     DWEET_URL_GET = "https://dweet.io:443/get/latest/dweet/for/%s" % config['dweet']['thing']
     MINIMUM_TEMPERATURE = int(config['temperature']['min'])
     MAXIMUM_TEMPERATURE = int(config['temperature']['max'])
@@ -17,6 +18,7 @@ class HotTubController(object):
     TEMPERATURE_CONTROL_BUTTON_PIN = int(config['temperature']['button_pin'])
     JETS_BUTTON_PIN = int(config['jets']['button_pin'])
     JET_CONTROLS = ['LOW', 'LOW+LIGHT', 'HIGH+LIGHT', 'HIGH', 'OFF']
+    CURRENT_TEMP_REPORTING_RATE = 60 * 5 # every 5 minutes
 
     def __init__(self):
         def signal_handler(signal_number, frame):
@@ -33,6 +35,7 @@ class HotTubController(object):
         print("Hottub controller is up.")
 
     def run(self):
+        t = time.time()
         while True:
             jets = 0
             temp = 0
@@ -41,7 +44,7 @@ class HotTubController(object):
             try:
                 content = get_request.json()['with'][0]['content']
                 jets = int(content['jets'])
-                temp = int(content['temp'])
+                temp = int(content['target_temp_desired'])
             except Exception as e:
                 if get_request.status_code != 200:
                     print("Caught exception:")
@@ -53,14 +56,23 @@ class HotTubController(object):
             if jets > 0:
                 self._set_jet_mode(jets)
                 reset_dweet = True
+
             if temp > 0:
                 self._set_temperature(temp)
                 reset_dweet = True
+
             if jets == -1 and temp == -1:
                 self._reset_hottub()
                 reset_dweet = True
-            if reset_dweet:
-                requests.post(self.DWEET_URL_POST, data={'jets': 0, 'temp': 0})
+
+            t2 = time.time()
+            if not reset_dweet and t2 - t > self.CURRENT_TEMP_REPORTING_RATE:
+                self._read_temperatures()
+
+            if reset_dweet or t2 - t > self.CURRENT_TEMP_REPORTING_RATE:
+                requests.post(self.DWEET_URL_POST, data={'jets': 0, 'target_temp_desired': 0, 'current_temp': self.current_temperature, 'target_temp_set': self.current_desired_temperature})
+                t = t2
+
             # Rate limit request.
             time.sleep(2)
 
@@ -79,9 +91,14 @@ class HotTubController(object):
         print("Done reading.")
         return desired_temperature
 
+    def _read_temperatures(self, desired_temperature):
+        self.current_temperature = self._get_current_temperature()
+        self.current_desired_temperature = self._get_current_desired_temperature()
+
     def _reset_hottub(self):
         self._temperature_toggle_direction_is_up = False
         self._jet_controls_index = 1
+        self.current_temperature = self._get_current_temperature()
 
     def _set_jet_mode(self, jet_mode):
         if jet_mode >= len(self.JET_CONTROLS):
@@ -102,12 +119,11 @@ class HotTubController(object):
             print('Temperature direction now is DOWN.')
 
     def _set_temperature(self, desired_temperature):
-        current_temperature = self._get_current_temperature()
-        current_desired_temperature = self._get_current_desired_temperature()
+        self._read_temperatures()
         print('Current is %i, current desired is %i, desired is %i.' % (
-            current_temperature, current_desired_temperature, desired_temperature))
+            self.current_temperature, self.current_desired_temperature, desired_temperature))
 
-        if desired_temperature == current_desired_temperature:
+        if desired_temperature == self.current_desired_temperature:
             print('Target already at desired temperature %i.' % desired_temperature)
             return
 
@@ -119,24 +135,24 @@ class HotTubController(object):
             desired_temperature = self.MINIMUM_TEMPERATURE
 
         ready_for_input = False
-        while desired_temperature != current_desired_temperature:
-            print('Temperature now at %i.' % current_desired_temperature)
-            if desired_temperature > current_desired_temperature:
+        while desired_temperature != self.current_desired_temperature:
+            print('Temperature now at %i.' % self.current_desired_temperature)
+            if desired_temperature > self.current_desired_temperature:
                 print('Trying to increase temperature from %i to %i.' % (
-                    current_desired_temperature, desired_temperature))
+                    self.current_desired_temperature, desired_temperature))
                 if self._temperature_toggle_direction_is_up:
                     if not ready_for_input:
                         ready_for_input = True
                         # This will make the display blink and ready for input
                         self._toggle(self.TEMPERATURE_CONTROL_BUTTON_PIN)
                     self._toggle(self.TEMPERATURE_CONTROL_BUTTON_PIN)
-                    current_desired_temperature += 1
+                    self.current_desired_temperature += 1
                 else:
                     self._toggle_temperature_direction()
 
-            elif desired_temperature < current_desired_temperature:
+            elif desired_temperature < self.current_desired_temperature:
                 print('Trying to decrease temperature from %i to %i.' % (
-                    current_desired_temperature, desired_temperature))
+                    self.current_desired_temperature, desired_temperature))
                 if self._temperature_toggle_direction_is_up:
                     self._toggle_temperature_direction()
                 else:
@@ -145,7 +161,7 @@ class HotTubController(object):
                         # This will make the display blink and ready for input
                         self._toggle(self.TEMPERATURE_CONTROL_BUTTON_PIN)
                     self._toggle(self.TEMPERATURE_CONTROL_BUTTON_PIN)
-                    current_desired_temperature -= 1
+                    self.current_desired_temperature -= 1
 
         # Once we are done, the direction has changed.
         self._switch_direction()
@@ -153,11 +169,10 @@ class HotTubController(object):
         print("Verifying the temperature.")
         # Wait for the temperature display to stop blinking.
         time.sleep(5.0)
-        current_temperature = self._get_current_temperature()
-        current_desired_temperature = self._get_current_desired_temperature()
+        self._read_temperatures()
         print("Current is %i, current desired is %i, desired is %i." % (
-            current_temperature, current_desired_temperature, desired_temperature))
-        if desired_temperature == current_desired_temperature:
+            self.current_temperature, self.current_desired_temperature, desired_temperature))
+        if desired_temperature == self.current_desired_temperature:
             print('Target temperature succesfully set to %i.' % desired_temperature)
         else:
             self._switch_direction()
